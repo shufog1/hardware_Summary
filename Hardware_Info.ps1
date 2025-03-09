@@ -175,9 +175,40 @@ try {
     # Storage Information
     Write-SectionHeader "STORAGE INFORMATION"
     
+    # Disk Space Summary Section
+    "Disk Space Summary:" | Add-Content -Path $outputFile
+    $logicalDisksForSummary = Get-WmiObject -Class Win32_LogicalDisk -ErrorAction SilentlyContinue
+    if ($logicalDisksForSummary) {
+        $totalStorageGB = 0
+        $totalFreeGB = 0
+        
+        foreach ($drive in $logicalDisksForSummary | Where-Object { $_.DriveType -eq 3 }) { # Only fixed disks
+            $sizeGB = [math]::Round($drive.Size / 1GB, 2)
+            $freeGB = [math]::Round($drive.FreeSpace / 1GB, 2)
+            $usedGB = [math]::Round(($drive.Size - $drive.FreeSpace) / 1GB, 2)
+            $usedPercent = if ($drive.Size -gt 0) { [math]::Round(($drive.Size - $drive.FreeSpace) * 100 / $drive.Size, 1) } else { 0 }
+            
+            "  Drive $($drive.DeviceID) ($($drive.VolumeName))" | Add-Content -Path $outputFile
+            "    Size: $sizeGB GB | Used: $usedGB GB ($usedPercent%) | Free: $freeGB GB" | Add-Content -Path $outputFile
+            
+            $totalStorageGB += $sizeGB
+            $totalFreeGB += $freeGB
+        }
+        
+        $totalUsedGB = $totalStorageGB - $totalFreeGB
+        $totalUsedPercent = if ($totalStorageGB -gt 0) { [math]::Round($totalUsedGB * 100 / $totalStorageGB, 1) } else { 0 }
+        
+        "  TOTAL STORAGE:" | Add-Content -Path $outputFile
+        "    Size: $totalStorageGB GB | Used: $totalUsedGB GB ($totalUsedPercent%) | Free: $totalFreeGB GB" | Add-Content -Path $outputFile
+    } else {
+        "  No logical drives detected" | Add-Content -Path $outputFile
+    }
+    ""  | Add-Content -Path $outputFile
+    
     try {
         # Get physical disks directly with error handling
         $diskDrives = Get-WmiObject -Class Win32_DiskDrive -ErrorAction SilentlyContinue
+        $logicalDisks = Get-WmiObject -Class Win32_LogicalDisk -ErrorAction SilentlyContinue
         
         # Set default storage info in case the detection fails
         $global:StorageInfo = "Unknown"
@@ -234,6 +265,37 @@ try {
                     foreach ($partition in $partitions) {
                         $partitionSize = [math]::Round($partition.Size / 1GB, 2)
                         "    - $($partition.Name): $partitionSize GB" | Add-Content -Path $outputFile
+                        
+                        # Try to get logical disk information (available/used space)
+                        $logicalDisks = Get-WmiObject -Class Win32_LogicalDisk -ErrorAction SilentlyContinue |
+                                        Where-Object { $_.DeviceID -eq ($partition.DeviceID -replace "Disk #\d+, Partition #\d+", "") }
+                        
+                        if (-not $logicalDisks) {
+                            # Alternative method to match logical disks to partitions
+                            try {
+                                $associators = Get-WmiObject -Query "ASSOCIATORS OF {Win32_DiskPartition.DeviceID='$($partition.DeviceID)'} WHERE AssocClass=Win32_LogicalDiskToPartition" -ErrorAction SilentlyContinue
+                                if ($associators) {
+                                    $logicalDisks = $associators
+                                }
+                            } catch {
+                                # Ignore errors in associator query
+                            }
+                        }
+                        
+                        if ($logicalDisks) {
+                            foreach ($logicalDisk in $logicalDisks) {
+                                $driveLetter = $logicalDisk.DeviceID
+                                $totalSize = [math]::Round($logicalDisk.Size / 1GB, 2)
+                                $freeSpace = [math]::Round($logicalDisk.FreeSpace / 1GB, 2)
+                                $usedSpace = [math]::Round(($logicalDisk.Size - $logicalDisk.FreeSpace) / 1GB, 2)
+                                $usedPercent = if ($logicalDisk.Size -gt 0) { [math]::Round(($logicalDisk.Size - $logicalDisk.FreeSpace) * 100 / $logicalDisk.Size, 1) } else { 0 }
+                                
+                                "      Drive $driveLetter" | Add-Content -Path $outputFile
+                                "        Total Space: $totalSize GB" | Add-Content -Path $outputFile
+                                "        Used Space: $usedSpace GB ($usedPercent%)" | Add-Content -Path $outputFile
+                                "        Free Space: $freeSpace GB" | Add-Content -Path $outputFile
+                            }
+                        }
                     }
                 } else {
                     "    - None detected" | Add-Content -Path $outputFile
